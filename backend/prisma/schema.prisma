@@ -1,0 +1,375 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum AccountType {
+  USD
+  USDT
+  BTC
+  ETH
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAWAL
+  TRANSFER_INTERNAL
+  ADMIN_CREDIT
+  ADMIN_DEBIT
+  LOAN_DISBURSEMENT
+  LOAN_REPAYMENT
+  CARD_TRANSACTION
+  INVESTMENT_BUY
+  INVESTMENT_SELL
+}
+
+enum TransactionStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum LoanStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  ACTIVE
+  PAID_OFF
+  DEFAULTED
+}
+
+// Core User Management
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String    @map("password_hash")
+  fullName      String    @map("full_name")
+  role          UserRole  @default(USER)
+  isFrozen      Boolean   @default(false) @map("is_frozen")
+  emailVerified Boolean   @default(false) @map("email_verified")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  lastLogin     DateTime? @map("last_login")
+  
+  // Relations
+  profile       UserProfile?
+  accounts      Account[]
+  sessions      AuthSession[]
+  transactions  Transaction[]
+  loans         Loan[]
+  cards         Card[]
+  supportMessages SupportMessage[]
+  portfolio     Portfolio?
+  adminLogs     AdminLog[] @relation("AdminActions")
+  
+  @@map("users")
+}
+
+model UserProfile {
+  id          String   @id @default(uuid())
+  userId      String   @unique @map("user_id")
+  phone       String?
+  address     String?
+  city        String?
+  country     String   @default("US")
+  postalCode  String?  @map("postal_code")
+  dateOfBirth DateTime? @map("date_of_birth")
+  kycStatus   String   @default("pending") @map("kyc_status")
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("user_profiles")
+}
+
+// Security & Session Management
+model AuthSession {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  refreshToken String   @unique @map("refresh_token")
+  ipAddress    String?  @map("ip_address")
+  userAgent    String?  @map("user_agent")
+  expiresAt    DateTime @map("expires_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@map("auth_sessions")
+}
+
+// Double-Entry Accounting System
+model Account {
+  id          String      @id @default(uuid())
+  userId      String      @map("user_id")
+  type        AccountType
+  accountNumber String    @unique @map("account_number")
+  isActive    Boolean     @default(true) @map("is_active")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  
+  // Relations
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  balances    Balance[]
+  ledgerEntries LedgerEntry[]
+  transactions Transaction[]
+  
+  @@unique([userId, type])
+  @@map("accounts")
+}
+
+model Balance {
+  id              String   @id @default(uuid())
+  accountId       String   @map("account_id")
+  available       Decimal  @db.Decimal(20, 8)
+  pending         Decimal  @default(0) @db.Decimal(20, 8)
+  reserved        Decimal  @default(0) @db.Decimal(20, 8)
+  lastUpdated     DateTime @default(now()) @map("last_updated")
+  
+  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  
+  @@map("balances")
+}
+
+// Core Ledger - Double Entry Bookkeeping
+model LedgerEntry {
+  id              String          @id @default(uuid())
+  transactionId   String          @map("transaction_id")
+  accountId       String          @map("account_id")
+  entryType       String          @map("entry_type")
+  amount          Decimal         @db.Decimal(20, 8)
+  runningBalance  Decimal         @db.Decimal(20, 8) @map("running_balance")
+  description     String?
+  entryDate       DateTime        @default(now()) @map("entry_date")
+  
+  transaction     Transaction     @relation(fields: [transactionId], references: [id])
+  account         Account         @relation(fields: [accountId], references: [id])
+  
+  @@index([accountId, entryDate])
+  @@map("ledger_entries")
+}
+
+// Transaction Engine
+model Transaction {
+  id              String           @id @default(uuid())
+  userId          String           @map("user_id")
+  accountId       String           @map("account_id")
+  type            TransactionType
+  amount          Decimal          @db.Decimal(20, 8)
+  currency        AccountType
+  status          TransactionStatus @default(PENDING)
+  description     String?
+  metadata        Json?
+  processedAt     DateTime?        @map("processed_at")
+  completedAt     DateTime?        @map("completed_at")
+  failedReason    String?          @map("failed_reason")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  
+  // Relations
+  user            User             @relation(fields: [userId], references: [id])
+  account         Account          @relation(fields: [accountId], references: [id])
+  ledgerEntries   LedgerEntry[]
+  statusHistory   TransactionStatusHistory[]
+  
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@map("transactions")
+}
+
+model TransactionStatusHistory {
+  id            String            @id @default(uuid())
+  transactionId String            @map("transaction_id")
+  status        TransactionStatus
+  changedBy     String?           @map("changed_by")
+  reason        String?
+  createdAt     DateTime          @default(now()) @map("created_at")
+  
+  transaction   Transaction       @relation(fields: [transactionId], references: [id])
+  
+  @@map("transaction_status_history")
+}
+
+// Card Management
+model Card {
+  id              String    @id @default(uuid())
+  userId          String    @map("user_id")
+  accountId       String    @map("account_id")
+  cardNumber      String    @unique @map("card_number")
+  cardNumberHash  String    @map("card_number_hash")
+  cvv             String
+  expiryMonth     String    @map("expiry_month")
+  expiryYear      String    @map("expiry_year")
+  cardholderName  String    @map("cardholder_name")
+  type            String
+  status          String    @default("ACTIVE")
+  dailyLimit      Decimal   @default(10000) @db.Decimal(20, 2) @map("daily_limit")
+  monthlyLimit    Decimal   @default(50000) @db.Decimal(20, 2) @map("monthly_limit")
+  issuedAt        DateTime  @default(now()) @map("issued_at")
+  frozenAt        DateTime? @map("frozen_at")
+  
+  user            User      @relation(fields: [userId], references: [id])
+  transactions    CardTransaction[]
+  
+  @@map("cards")
+}
+
+model CardTransaction {
+  id          String   @id @default(uuid())
+  cardId      String   @map("card_id")
+  amount      Decimal  @db.Decimal(20, 8)
+  merchant    String
+  category    String?
+  location    String?
+  status      String   @default("COMPLETED")
+  createdAt   DateTime @default(now()) @map("created_at")
+  
+  card        Card     @relation(fields: [cardId], references: [id])
+  
+  @@map("card_transactions")
+}
+
+// Loan System
+model Loan {
+  id              String     @id @default(uuid())
+  userId          String     @map("user_id")
+  amount          Decimal    @db.Decimal(20, 8)
+  currency        AccountType @default(USD)
+  interestRate    Decimal    @map("interest_rate")
+  termMonths      Int        @map("term_months")
+  monthlyPayment  Decimal    @db.Decimal(20, 8) @map("monthly_payment")
+  totalRepayable  Decimal    @db.Decimal(20, 8) @map("total_repayable")
+  status          LoanStatus @default(PENDING)
+  purpose         String?
+  approvedBy      String?    @map("approved_by")
+  approvedAt      DateTime?  @map("approved_at")
+  disbursedAt     DateTime?  @map("disbursed_at")
+  createdAt       DateTime   @default(now()) @map("created_at")
+  
+  user            User       @relation(fields: [userId], references: [id])
+  payments        LoanPayment[]
+  
+  @@map("loans")
+}
+
+model LoanPayment {
+  id          String    @id @default(uuid())
+  loanId      String    @map("loan_id")
+  amount      Decimal   @db.Decimal(20, 8)
+  principal   Decimal   @db.Decimal(20, 8)
+  interest    Decimal   @db.Decimal(20, 8)
+  dueDate     DateTime  @map("due_date")
+  paidAt      DateTime? @map("paid_at")
+  status      String    @default("PENDING")
+  
+  loan        Loan      @relation(fields: [loanId], references: [id])
+  
+  @@map("loan_payments")
+}
+
+// Investment/Broker Module
+model Asset {
+  id          String    @id @default(uuid())
+  symbol      String    @unique
+  name        String
+  type        String
+  category    String
+  currentPrice Decimal  @db.Decimal(20, 8) @map("current_price")
+  dayChange   Decimal   @map("day_change")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  
+  priceHistory PriceSnapshot[]
+  positions    Position[]
+  
+  @@map("assets")
+}
+
+model PriceSnapshot {
+  id        String   @id @default(uuid())
+  assetId   String   @map("asset_id")
+  price     Decimal  @db.Decimal(20, 8)
+  volume    Decimal  @db.Decimal(20, 8)
+  timestamp DateTime @default(now())
+  
+  asset     Asset    @relation(fields: [assetId], references: [id])
+  
+  @@index([assetId, timestamp])
+  @@map("price_snapshots")
+}
+
+model Portfolio {
+  id          String     @id @default(uuid())
+  userId      String     @unique @map("user_id")
+  totalValue  Decimal    @default(0) @db.Decimal(20, 8) @map("total_value")
+  totalCost   Decimal    @default(0) @db.Decimal(20, 8) @map("total_cost")
+  unrealizedPnL Decimal  @default(0) @db.Decimal(20, 8) @map("unrealized_pnl")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+  
+  user        User       @relation(fields: [userId], references: [id])
+  positions   Position[]
+  
+  @@map("portfolios")
+}
+
+model Position {
+  id          String    @id @default(uuid())
+  portfolioId String    @map("portfolio_id")
+  assetId     String    @map("asset_id")
+  quantity    Decimal   @db.Decimal(20, 8)
+  avgCost     Decimal   @db.Decimal(20, 8) @map("avg_cost")
+  currentValue Decimal  @db.Decimal(20, 8) @map("current_value")
+  unrealizedPnL Decimal @db.Decimal(20, 8) @map("unrealized_pnl")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id])
+  asset       Asset     @relation(fields: [assetId], references: [id])
+  
+  @@unique([portfolioId, assetId])
+  @@map("positions")
+}
+
+// Support System
+model SupportMessage {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  adminId     String?  @map("admin_id")
+  message     String
+  isFromUser  Boolean  @default(true) @map("is_from_user")
+  isRead      Boolean  @default(false) @map("is_read")
+  attachment  String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  
+  user        User     @relation(fields: [userId], references: [id])
+  
+  @@index([userId, createdAt])
+  @@map("support_messages")
+}
+
+// Admin Audit Trail
+model AdminLog {
+  id          String   @id @default(uuid())
+  adminId     String   @map("admin_id")
+  action      String
+  targetType  String   @map("target_type")
+  targetId    String   @map("target_id")
+  oldValue    Json?    @map("old_value")
+  newValue    Json?    @map("new_value")
+  reason      String?
+  ipAddress   String?  @map("ip_address")
+  createdAt   DateTime @default(now()) @map("created_at")
+  
+  admin       User     @relation("AdminActions", fields: [adminId], references: [id])
+  
+  @@index([adminId, createdAt])
+  @@map("admin_logs")
+}
